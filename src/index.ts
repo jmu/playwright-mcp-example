@@ -1,11 +1,46 @@
 import { env } from 'cloudflare:workers';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 
 import { createMcpAgent } from '@cloudflare/playwright-mcp';
 
 export const PlaywrightMCP = createMcpAgent(env.BROWSER);
 
+// Verify Cloudflare Access JWT
+async function verifyJWT(request: Request, env: Env): Promise<{ valid: boolean; payload?: any }> {
+  const token = request.headers.get('cf-access-jwt-assertion');
+
+  if (!token) {
+    return { valid: false };
+  }
+
+  try {
+    const JWKS = createRemoteJWKSet(
+      new URL(`${env.TEAM_DOMAIN}/cdn-cgi/access/certs`)
+    );
+
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: env.TEAM_DOMAIN,
+      audience: env.POLICY_AUD,
+    });
+
+    return { valid: true, payload };
+  } catch (error) {
+    console.error('JWT verification failed:', error);
+    return { valid: false };
+  }
+}
+
 // Simple REST endpoint to fetch webpage content (using fetch, not browser)
 async function handleFetch(request: Request, env: Env): Promise<Response> {
+  // Verify JWT first
+  const verification = await verifyJWT(request, env);
+  if (!verification.valid) {
+    return new Response('Unauthorized: Invalid or missing JWT', {
+      status: 401,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  }
+
   try {
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 });
@@ -17,7 +52,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       return new Response('Missing url parameter', { status: 400 });
     }
 
-    console.log(`Fetching URL: ${url}`);
+    console.log(`Fetching URL: ${url} for user: ${verification.payload.email}`);
 
     // Try simple fetch first (faster than browser)
     const response = await fetch(url);
@@ -56,11 +91,11 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const { pathname } = new URL(request.url);
 
-    // Health check endpoint
+    // Health check endpoint (no auth required)
     if (pathname === '/health') {
       return new Response(JSON.stringify({
         status: 'ok',
-        message: 'MCP service is running',
+        message: 'MCP service is running with Cloudflare Access',
         endpoints: ['/fetch', '/sse', '/mcp', '/health']
       }), {
         headers: { 'Content-Type': 'application/json' },

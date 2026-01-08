@@ -6,6 +6,11 @@ compatibility_flags = ["nodejs_compat"]
 [browser]
 binding = "BROWSER"
 
+# Cloudflare Access JWT verification
+[vars]
+POLICY_AUD = "b1b8d9b428c8870ef05782fb32d59bc371953e08fdcf664258dc5635c5923db5"
+TEAM_DOMAIN = "https://niuniniu.cloudflareaccess.com"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PlaywrightMCP"]
