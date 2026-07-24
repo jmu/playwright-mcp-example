@@ -1,9 +1,14 @@
-import { env } from 'cloudflare:workers';
+import { env, WorkerEntrypoint } from 'cloudflare:workers';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 
 import { createMcpAgent } from '@cloudflare/playwright-mcp';
 
 export const PlaywrightMCP = createMcpAgent(env.BROWSER);
+
+type FetchResult = {
+  url: string;
+  content: string;
+};
 
 // Verify Cloudflare Access JWT
 async function verifyJWT(request: Request, env: Env): Promise<{ valid: boolean; payload?: any }> {
@@ -30,6 +35,53 @@ async function verifyJWT(request: Request, env: Env): Promise<{ valid: boolean; 
   }
 }
 
+function normalizeUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('Missing url parameter');
+  }
+
+  const url = new URL(value);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Only HTTP and HTTPS URLs are supported');
+  }
+
+  return url.toString();
+}
+
+function extractTextContent(html: string): string {
+  return html
+    .replace(/<script[^>]*>.*?<\/script>/gis, '')
+    .replace(/<style[^>]*>.*?<\/style>/gis, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 10000);
+}
+
+async function fetchContent(urlValue: unknown): Promise<FetchResult> {
+  const url = normalizeUrl(urlValue);
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Upstream fetch failed: ${response.status}`);
+  }
+
+  const html = await response.text();
+  return {
+    url,
+    content: extractTextContent(html),
+  };
+}
+
+// Private RPC entrypoint for Workers on the same Cloudflare account.
+// Access to this class is granted by a Service Binding, not by an end-user JWT.
+export class ContentFetcher extends WorkerEntrypoint<Env> {
+  async fetchContent(url: string): Promise<FetchResult> {
+    console.log(`Fetching URL through internal service binding: ${url}`);
+    return fetchContent(url);
+  }
+}
+
 // Simple REST endpoint to fetch webpage content (using fetch, not browser)
 async function handleFetch(request: Request, env: Env): Promise<Response> {
   // Verify JWT first
@@ -46,32 +98,14 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       return new Response('Method not allowed', { status: 405 });
     }
 
-    const { url } = await request.json();
+    const { url } = await request.json() as { url?: unknown };
+    const result = await fetchContent(url);
 
-    if (!url) {
-      return new Response('Missing url parameter', { status: 400 });
-    }
-
-    console.log(`Fetching URL: ${url} for user: ${verification.payload.email}`);
-
-    // Try simple fetch first (faster than browser)
-    const response = await fetch(url);
-    const html = await response.text();
-
-    // Extract text content from HTML (simple regex-based)
-    const textContent = html
-      .replace(/<script[^>]*>.*?<\/script>/gis, '')
-      .replace(/<style[^>]*>.*?<\/style>/gis, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    console.log(`Content length: ${textContent.length}`);
+    console.log(`Fetched ${result.content.length} chars for user: ${verification.payload.email}`);
 
     return new Response(JSON.stringify({
       success: true,
-      url,
-      content: textContent.slice(0, 10000), // Limit to 10k chars
+      ...result,
     }), {
       headers: { 'Content-Type': 'application/json' },
     });

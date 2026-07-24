@@ -2,10 +2,12 @@
   "compilerOptions": {
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "target": "ES2022",
     "noEmit": true,
     "skipLibCheck": true
   },
   "include": [
     "worker-configuration.d.ts",
+    "src/**/*.ts"
   ]
 }
